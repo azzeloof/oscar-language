@@ -1,7 +1,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
+#include <pybind11/numpy.h>
 #include <portaudio.h>
-
 #include <iostream>
 #include <vector>
 #include <string>
@@ -63,16 +63,21 @@ private:
     double phase_{0.0};
     double sample_rate_;
     double amplitude_;
-    double phase_increment_{0.0};
     double frequency_;
+    std::vector<float> wavetable_;
+
 
 public:
-    Synth(double sample_rate) : 
+    Synth(double sample_rate, std::vector<float> table) : 
         sample_rate_(sample_rate), 
         amplitude_(0.5), 
-        frequency_(440.0) 
+        frequency_(440.0),
+        wavetable_(std::move(table))
     {
-        setFrequency(this->frequency_);
+        //setFrequency(this->frequency_);
+        if (wavetable_.empty()) {
+            wavetable_.push_back(0.f);
+        }
     }
     virtual ~Synth() = default;
 
@@ -80,23 +85,27 @@ public:
     Synth& operator=(const Synth&) = delete;
 
     void render(float* mono_out, unsigned long frames) {
-        for (unsigned long i = 0; i < frames; ++i) {
-            mono_out[i] = static_cast<float>(this->amplitude_ * std::sin(this->phase_));
-            this->phase_ += this->phase_increment_;
-            if (this->phase_ >= 2.0 * M_PI) {
-                this->phase_ -= 2.0 * M_PI;
-            }
+        if (wavetable_.empty()) return;
+        double table_size = static_cast<double>(wavetable_.size());
+        double phase_increment = this->frequency_ * table_size / this->sample_rate_;
+        for (unsigned long i=0; i<frames; ++i) {
+            unsigned int i0 = static_cast<unsigned int>(this->phase_);
+            unsigned int i1 = (i0 + 1) % wavetable_.size();
+            double frac = this->phase_ - i0;
+            float val0 = wavetable_[i0];
+            float val1 = wavetable_[i1];
+            float current_sample = static_cast<float>(val0 + frac * (val1 - val0));
+            mono_out[i] = current_sample * this->amplitude_;
+            this->phase_ += phase_increment;
+            while (this->phase_ >= table_size) this->phase_ -= table_size;
         }
+
     }
 
     void start() { is_playing_.store(true); }
     void stop() { is_playing_.store(false); }
     bool isPlaying() const { return is_playing_.load(); }
-
-    void setFrequency(double freq) {
-        this->frequency_ = freq;
-        this->phase_increment_ = (2.0 * M_PI * this->frequency_) / this->sample_rate_;
-    }
+    void setFrequency(double freq) { this->frequency_ = freq; }
     double getFrequency() const { return frequency_; }
 };
 
@@ -236,19 +245,23 @@ public:
         py::print("AudioEngine instance destroyed. Stream stopped and closed.");
     }
 
-    std::shared_ptr<Synth> synth(const std::string& name) {
+    std::shared_ptr<Synth> get_or_create_synth(const std::string& name, py::array_t<float> table) {
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        std::vector<float> table_vec(table.data(), table.data() + table.size());
         auto it = synths_.find(name);
         if (it != synths_.end()) {
+            //TODO: Consider replacing existing wavetable
+            py::print("Synth '", name, "' already exists.");
             return it->second;
         } else {
-            auto new_synth = std::make_shared<Synth>(this->sample_rate_);
+            py::print("Creating new wavetable synth with name: '", name, "'");
+            auto new_synth = std::make_shared<Synth>(this->sample_rate_, std::move(table_vec));
             synths_[name] = new_synth;
             return new_synth;
         }
     }
 
-    std::shared_ptr<Patch> patch(const std::string& patch_name, const std::string& synth_name, std::vector<int> channels) {
+    std::shared_ptr<Patch> get_or_create_patch(const std::string& patch_name, const std::string& synth_name, std::vector<int> channels) {
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         if (synths_.find(synth_name) == synths_.end()) {
             throw std::runtime_error("Cannot create patch: synth with name '" + synth_name + "' does not exist.");
@@ -305,8 +318,8 @@ PYBIND11_MODULE(oscar_server, m) {
 
     py::class_<AudioEngine>(m, "AudioEngine")
         .def(py::init<int, int>(), py::arg("device_index"), py::arg("num_channels"))
-        .def("synth", &AudioEngine::synth, py::arg("name"), "Gets or creates a synth by its unique name.")
-        .def("patch", &AudioEngine::patch, py::arg("patch_name"), py::arg("synth_name"), py::arg("channels"), "Gets or creates a patch to route a synth to channels.")
+        .def("get_or_create_synth", &AudioEngine::get_or_create_synth, py::arg("name"), py::arg("wavetable"), "Gets or creates a synth by its unique name.")
+        .def("get_or_create_patch", &AudioEngine::get_or_create_patch, py::arg("patch_name"), py::arg("synth_name"), py::arg("channels"), "Gets or creates a patch to route a synth to channels.")
         .def("delete_synth", &AudioEngine::delete_synth, py::arg("name"), "Schedules a named synth and its associated patches for deletion.")
         .def("delete_patch", &AudioEngine::delete_patch, py::arg("name"), "Schedules a named patch for deletion.");
 }
