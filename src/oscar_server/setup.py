@@ -1,0 +1,41 @@
+# setup.py
+
+import sys
+from pybind11.setup_helpers import Pybind11Extension, build_ext
+from setuptools import setup
+
+__version__ = "0.0.2" # New version
+
+# Platform-specific linker arguments
+extra_link_args = []
+if sys.platform == 'darwin':
+    # On macOS, PortAudio might depend on CoreAudio services
+    extra_link_args.extend([
+        "-framework", "CoreAudio",
+        "-framework", "AudioToolbox",
+        "-framework", "CoreFoundation"
+    ])
+
+ext_modules = [
+    Pybind11Extension(
+        "oscar_server",
+        ["main.cpp"],
+        # The key change: tell the linker to find and use the PortAudio library
+        libraries=["portaudio"],
+        define_macros=[("VERSION_INFO", __version__)],
+        extra_link_args=extra_link_args,
+        cxx_std=17
+    ),
+]
+
+setup(
+    name="oscar_server",
+    version=__version__,
+    author="Adam Zeloof",
+    author_email="adam@zeloof.xyz",
+    description="A PortAudio-based audio server for Python",
+    ext_modules=ext_modules,
+    cmdclass={"build_ext": build_ext},
+    zip_safe=False,
+    python_requires=">=3.7",
+)
