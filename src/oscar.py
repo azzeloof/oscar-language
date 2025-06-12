@@ -79,10 +79,11 @@ class Patch:
 
 def example():
     global engine
-    s1 = Synth("s1")
+    s1 = Synth("s1", wave_fn=Synth.WAVES['square'])
     s1.start()
-    s2 = Synth("s2")
-    s2.freq(110.2)
+    s1.freq(100)
+    s2 = Synth("s2", wave_fn=Synth.WAVES['triangle'])
+    s2.freq(100.2)
     s2.start()
     patches = [
         Patch('p1', "s1", [0]),
