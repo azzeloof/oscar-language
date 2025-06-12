@@ -14,33 +14,35 @@ class Synth:
     }
 
     def __init__(self, name, frequency=440.0, amplitude=0.5, wave_fn=WAVES['sine'], fn_args={}):
-        self.name = name
+        self.synth_name = name
         self.frequency = frequency
         self.amplitude = amplitude
         self.wave_fn = wave_fn
         self.fn_args = fn_args
         self.table_size = 2048
         self.wavetable = None
-        self.regen()
-        self.ptr = engine.get_or_create_synth(self.name, self.wavetable)
+        self.regen(update=False)
+        self.ptr = engine.get_or_create_synth(self.synth_name, self.wavetable)
         self.start()
-
-    def get_name(self):
-        return self.name
-
-    def regen(self):
+    
+    def regen(self, update=True):
         wavetable = self.wave_fn(self.table_size, **self.fn_args)
         # Normalize the table to be between -1.0 and 1.0
         wavetable /= np.max(np.abs(wavetable))
         self.wavetable = wavetable
+        if update:
+            self.ptr.update_wavetable(self.wavetable)
 
+    def name(self):
+        return self.synth_name
+    
     def start(self):
         self.ptr.start()
 
     def stop(self):
         self.ptr.stop()
 
-    def is_playing(self):
+    def playing(self):
         return self.ptr.is_playing()
 
     def freq(self, freq=None):
@@ -57,8 +59,12 @@ class Synth:
             self.amplitude = amp
             self.ptr.set_amplitude(amp)
 
-    def set_wave_fn(self, wave_fn, fn_args={}):
-        self.wave_fn = wave_fn
+    def wave(self, wave_fn=None, fn_args={}):
+        if wave_fn == None:
+            return self.wave_fn
+        else:
+            self.wave_fn = wave_fn
+            self.regen()
     
 class Patch:
     global engine
@@ -67,31 +73,71 @@ class Patch:
         if isinstance(synth, str):
             self.synth_name = synth
         else:
-            self.synth_name = synth.get_name()
+            self.synth_name = synth.name()
         self.channels = channels
         self.ptr = engine.get_or_create_patch(self.patch_name, self.synth_name, self.channels)
 
-    def get_channels(self):
-        return self.channels
-
     def get_synth_name(self):
         return self.synth_name
+    
+    def synth(self, s=None):
+        """
+        Gets or sets the synth being patched in one of three cases:
+            - s=None: Queries the engine for the synth name and returns it
+            - s="s1": Sets the synth to be the one named "s1"
+            - s=s1: Retrieves the name of synth s1 and sets the patch to use it
+        """
+        if s == None:
+            self.synth_name = self.ptr.get_synth_name()
+            return self.synth_name
+        if isinstance(s, str):
+            self.synth_name = s
+        else:
+            self.synth_name = s.name()
+        self.ptr.set_synth_name(self.synth_name)
+
+
+    def ch(self, c=None):
+        """
+        Gets or sets the list of channels being patched into
+        """
+        if c == None:
+            self.channels = self.ptr.get_channels()
+            return self.channels
+        else:
+            self.channels = c
+            self.ptr.set_channels(self.channels)
+
+
 
 def example():
     global engine
-    s1 = Synth("s1", wave_fn=Synth.WAVES['sine'])
-    s1.start()
+    s1 = Synth("s1")
     s1.freq(100)
-    s2 = Synth("s2", wave_fn=Synth.WAVES['triangle'])
+    s2 = Synth("s2", wave_fn=Synth.WAVES['sine'])
     s2.freq(100)
-    s2.start()
     patches = [
         Patch('p1', "s1", [0]),
         Patch('p2', "s2", [1])
     ]
-    time.sleep(10)
+    time.sleep(2)
+    s1.amp(0.8)
+    s2.amp(0.8)
+    s1.wave(wave_fn=Synth.WAVES['square'])
+    time.sleep(2)
+    patches[0].ch([1])
+    patches[1].ch([0])
+    time.sleep(2)
+    patches[0].synth(s2)
+    patches[1].synth('s1')
+    time.sleep(2)
+    engine.set_master_volume(0.5)
+    time.sleep(2)
+    engine.set_master_volume(1.0)
+    time.sleep(2)
     s1.stop()
     s2.stop()
+
 
 def run():
     global engine
@@ -137,7 +183,7 @@ def run():
     exitmsg = "Exiting Oscar..."
     repl = code.InteractiveConsole(locals=globals())
     repl.interact(banner=banner, exitmsg=exitmsg)
-
+    engine.stop_all()
     oscar_server.terminate()
 
 if __name__ == '__main__':

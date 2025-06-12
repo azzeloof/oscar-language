@@ -104,9 +104,16 @@ public:
 
     void start() { is_playing_.store(true); }
     void stop() { is_playing_.store(false); }
-    bool isPlaying() const { return is_playing_.load(); }
-    void setFrequency(double freq) { this->frequency_ = freq; }
-    double getFrequency() const { return frequency_; }
+    bool is_playing() const { return is_playing_.load(); }
+    void set_frequency(double freq) { this->frequency_ = freq; }
+    double get_frequency() const { return frequency_; }
+    void set_amplitude(double amp) { this->amplitude_ = amp; }
+    double get_amplitude() const { return amplitude_; }
+    void update_wavetable(std::vector<float> new_table) {
+        //TODO check that length is ok?
+        wavetable_.clear();
+        wavetable_.insert(wavetable_.end(), new_table.begin(), new_table.end());
+    }
 };
 
 
@@ -120,8 +127,10 @@ public:
         : synth_name_(std::move(synth_name)), channels_(std::move(channels)) {}
     ~Patch() = default;
 
-    const std::string& getSynthName() const { return synth_name_; }
-    const std::vector<int>& getChannels() const { return channels_; }
+    const std::string& get_synth_name() const { return synth_name_; }
+    const std::vector<int>& get_channels() const { return channels_; }
+    void set_synth_name(const std::string& name) { synth_name_ = name; }
+    void set_channels(const std::vector<int>& channels) { channels_ = channels; }
 };
 
 
@@ -130,6 +139,7 @@ private:
     PaStream* stream_{nullptr};
     double sample_rate_;
     int numOutputChannels_{0};
+    float master_volume{1.f};
     
     std::map<std::string, std::shared_ptr<Synth>> synths_;
     std::map<std::string, std::shared_ptr<Patch>> patches_;
@@ -159,7 +169,7 @@ private:
         for (const auto& synth_name : synth_names_to_process) {
             std::vector<std::string> related_patches_to_delete;
             for (const auto& [patch_name, patch_ptr] : patches_) {
-                if (patch_ptr->getSynthName() == synth_name) {
+                if (patch_ptr->get_synth_name() == synth_name) {
                     related_patches_to_delete.push_back(patch_name);
                 }
             }
@@ -185,15 +195,15 @@ private:
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         
         for (const auto& [patch_name, patch_ptr] : patches_) {
-            auto synth_it = synths_.find(patch_ptr->getSynthName());
-            if (synth_it != synths_.end() && synth_it->second->isPlaying()) {
+            auto synth_it = synths_.find(patch_ptr->get_synth_name());
+            if (synth_it != synths_.end() && synth_it->second->is_playing()) {
                 std::shared_ptr<Synth> synth = synth_it->second;
                 synth->render(mono_buffer.data(), framesPerBuffer);
                 
-                for (int channel_index : patch_ptr->getChannels()) {
+                for (int channel_index : patch_ptr->get_channels()) {
                     if (channel_index < this->numOutputChannels_) {
                         for (unsigned long frame = 0; frame < framesPerBuffer; ++frame) {
-                            out[frame * this->numOutputChannels_ + channel_index] += mono_buffer[frame];
+                            out[frame * this->numOutputChannels_ + channel_index] += mono_buffer[frame] * this->master_volume;
                         }
                     }
                 }
@@ -286,6 +296,41 @@ public:
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         patch_names_to_delete_.push_back(name);
     }
+
+    std::vector<std::string> list_synths() {
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        std::vector<std::string> names;
+        for (const auto& [name, synth_ptr] : synths_) {
+            names.push_back(name);
+        }
+        return names;
+    }
+
+    std::vector<std::string> list_patches() {
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        std::vector<std::string> names;
+        for (const auto& [name, patch_ptr] : patches_) {
+            names.push_back(name);
+        }
+        return names;
+    }
+
+    void set_master_volume(float volume) {
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        master_volume = volume;
+    }
+
+    float get_master_volume() {
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        return master_volume;
+    }
+
+    void stop_all() {
+        std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        for (const auto& [name, synth_ptr] : synths_) {
+            synth_ptr->stop();
+        }
+    }
 };
 
 
@@ -308,18 +353,28 @@ PYBIND11_MODULE(oscar_server, m) {
     py::class_<Synth, std::shared_ptr<Synth>>(m, "Synth")
         .def("start", &Synth::start)
         .def("stop", &Synth::stop)
-        .def("is_playing", &Synth::isPlaying)
-        .def("set_frequency", &Synth::setFrequency)
-        .def("get_frequency", &Synth::getFrequency);
+        .def("is_playing", &Synth::is_playing)
+        .def("set_frequency", &Synth::set_frequency)
+        .def("get_frequency", &Synth::get_frequency)
+        .def("set_amplitude", &Synth::set_amplitude)
+        .def("get_amplitude", &Synth::get_amplitude)
+        .def("update_wavetable", &Synth::update_wavetable);
     
     py::class_<Patch, std::shared_ptr<Patch>>(m, "Patch")
-        .def("get_channels", &Patch::getChannels)
-        .def("get_synth_name", &Patch::getSynthName);
+        .def("get_channels", &Patch::get_channels)
+        .def("get_synth_name", &Patch::get_synth_name)
+        .def("set_synth_name", &Patch::set_synth_name)
+        .def("set_channels", &Patch::set_channels);
 
     py::class_<AudioEngine>(m, "AudioEngine")
         .def(py::init<int, int>(), py::arg("device_index"), py::arg("num_channels"))
         .def("get_or_create_synth", &AudioEngine::get_or_create_synth, py::arg("name"), py::arg("wavetable"), "Gets or creates a synth by its unique name.")
         .def("get_or_create_patch", &AudioEngine::get_or_create_patch, py::arg("patch_name"), py::arg("synth_name"), py::arg("channels"), "Gets or creates a patch to route a synth to channels.")
         .def("delete_synth", &AudioEngine::delete_synth, py::arg("name"), "Schedules a named synth and its associated patches for deletion.")
-        .def("delete_patch", &AudioEngine::delete_patch, py::arg("name"), "Schedules a named patch for deletion.");
-}
+        .def("delete_patch", &AudioEngine::delete_patch, py::arg("name"), "Schedules a named patch for deletion.")
+        .def("list_synths", &AudioEngine::list_synths, "Lists all synths currently in use.")
+        .def("list_patches", &AudioEngine::list_patches, "Lists all patches currently in use.")
+        .def("set_master_volume", &AudioEngine::set_master_volume, py::arg("volume"), "Sets the master volume of the engine.")
+        .def("get_master_volume", &AudioEngine::get_master_volume, "Gets the master volume of the engine.")
+        .def("stop_all", &AudioEngine::stop_all, "Stops all synths in the engine.");
+};
