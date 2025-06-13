@@ -3,9 +3,25 @@ import time
 import oscar_server
 import sys
 import code
+from collections.abc import Callable
 
-class Synth:
-    global engine
+
+class EngineBoundType(type):
+    """Magic to simplify the live coding syntax."""
+    _active_engine = None
+
+    def bind_engine(cls, engine_instance:oscar_server.AudioEngine) -> None:
+        """Binds a single engine instance to this class."""
+        cls._active_engine = engine_instance
+
+    def get_engine(cls) -> oscar_server.AudioEngine:
+        """Returns the bound engine instance."""
+        if not cls._active_engine:
+            raise RuntimeError(f"{cls.__name__} is not bound to an engine.")
+        return cls._active_engine
+
+class Synth(metaclass=EngineBoundType):
+    """Wrapper on the Synth class from the c++ engine."""
     WAVES = {
         'sine': lambda table_size: np.sin(np.linspace(0, 2 * np.pi, table_size, endpoint=False)).astype(np.float32),
         'square': lambda table_size: np.sign(np.sin(np.linspace(0, 2 * np.pi, table_size, endpoint=False))).astype(np.float32),
@@ -13,83 +29,81 @@ class Synth:
         'triangle': lambda table_size: np.abs(np.linspace(-1, 1, table_size, endpoint=False)).astype(np.float32)
     }
 
-    def __init__(self, name, frequency=440.0, amplitude=0.5, offset=0.0, wave_fn=WAVES['sine'], fn_args={}):
-        #TODO most of these values shouldn't be stored here
+    def __init__(self, name:str, frequency:float = 440.0, amplitude:float = 0.5, offset:float = 0.0, wave_fn:Callable = WAVES['sine'], fn_args:dict = {}):
+        self.engine = self.__class__.get_engine()
         self.synth_name = name
-        self.frequency = frequency
-        self.amplitude = amplitude
-        self.phase_offset = offset
         self.wave_fn = wave_fn
         self.fn_args = fn_args
         self.table_size = 2048
         self.wavetable = None
         self.regen(update=False)
-        self.ptr = engine.get_or_create_synth(self.synth_name, self.wavetable)
+        self.ptr = self.engine.get_or_create_synth(self.synth_name, self.wavetable)
         self.start()
     
-    def regen(self, update=True):
-        wavetable = self.wave_fn(self.table_size, **self.fn_args)
-        # Normalize the table to be between -1.0 and 1.0
-        wavetable /= np.max(np.abs(wavetable))
+    def regen(self, rebuild:bool = True, update:bool = True) -> None:
+        """Rebuilds the wavetable and optionally updates the engine."""
+        if rebuild:
+            wavetable = self.wave_fn(self.table_size, **self.fn_args)
+            # Normalize the table to be between -1.0 and 1.0
+            wavetable /= np.max(np.abs(wavetable))
         self.wavetable = wavetable
         if update:
             self.ptr.update_wavetable(self.wavetable)
 
-    def name(self):
+    def name(self) -> str:
+        """Returns the name of the synth."""
         return self.synth_name
     
-    def start(self):
+    def start(self) -> None:
         self.ptr.start()
 
-    def stop(self):
+    def stop(self) -> None:
         self.ptr.stop()
 
-    def playing(self):
+    def playing(self) -> bool:
         return self.ptr.is_playing()
 
-    def freq(self, freq=None):
+    def freq(self, freq:float = None) -> None | float:
         if freq == None:
-            return self.frequency
+            return self.ptr.get_frequency()
         else:
-            self.frequency = freq
             self.ptr.set_frequency(freq)
 
-    def phase(self, offset=None):
+    def phase(self, offset:float = None) -> None | float:
         if offset == None:
-            return self.phase_offset
+            return self.ptr.get_phase_offset()
         else:
-            self.phase_offset = offset % 1.0
-            self.ptr.set_phase_offset(offset)
+            self.ptr.set_phase_offset(offset % 1.0)
 
-    def amp(self, amp=None):
+    def amp(self, amp:float = None) -> None | float:
         if amp == None:
-            return self.amplitude
+            return self.ptr.get_amplitude()
         else:
-            self.amplitude = amp
             self.ptr.set_amplitude(amp)
 
-    def wave(self, wave_fn=None, fn_args={}):
+    def wave(self, wave_fn:callable = None, fn_args:dict = {}) -> None | Callable:
         if wave_fn == None:
             return self.wave_fn
         else:
             self.wave_fn = wave_fn
             self.regen()
     
-class Patch:
-    global engine
-    def __init__(self, patch_name, synth, channels):
+class Patch(metaclass=EngineBoundType):
+    """Wrapper on the Patch class from the c++ engine."""
+    def __init__(self, patch_name:str, synth:str|Synth, channels:list[int]):
+        self.engine = self.__class__.get_engine()
         self.patch_name = patch_name
         if isinstance(synth, str):
-            self.synth_name = synth
+            synth_name = synth
         else:
-            self.synth_name = synth.name()
-        self.channels = channels
-        self.ptr = engine.get_or_create_patch(self.patch_name, self.synth_name, self.channels)
+            synth_name = synth.name()
+        self.ptr = self.engine.get_or_create_patch(self.patch_name, synth_name, channels)
 
-    def get_synth_name(self):
+    def get_synth_name(self) -> str:
+        """Returns the name of the synth being patched."""
         return self.synth_name
     
-    def synth(self, s=None):
+    def synth(self, s:str|Synth|None = None) -> None | str:
         """
         Gets or sets the synth being patched in one of three cases:
             - s=None: Queries the engine for the synth name and returns it
@@ -97,30 +111,45 @@ class Patch:
             - s=s1: Retrieves the name of synth s1 and sets the patch to use it
         """
         if s == None:
-            self.synth_name = self.ptr.get_synth_name()
-            return self.synth_name
+            return self.ptr.get_synth_name()
         if isinstance(s, str):
-            self.synth_name = s
+            synth_name = s
         else:
-            self.synth_name = s.name()
-        self.ptr.set_synth_name(self.synth_name)
+            synth_name = s.name()
+        self.ptr.set_synth_name(synth_name)
 
 
-    def ch(self, c=None):
+    def ch(self, c:list[int]|None = None) -> None | list[int]:
         """
         Gets or sets the list of channels being patched into
         """
         if c == None:
-            self.channels = self.ptr.get_channels()
-            return self.channels
+            return self.ptr.get_channels()
         else:
-            self.channels = c
-            self.ptr.set_channels(self.channels)
+            self.ptr.set_channels(c)
+
+class Master(metaclass=EngineBoundType):
+    def __init__(self):
+        self.engine = self.__class__.get_engine()
+
+    def vol(self, v:float|None = None) -> None | float:
+        if v == None:
+            return self.engine.get_master_volume()
+        else:
+            self.engine.set_master_volume(v)
+
+    def getSynths(self) -> list[str]:
+        return self.engine.list_synths()
+
+    def getPatches(self) -> list[str]:
+        return self.engine.list_patches()
+    
+    def stopAll(self) -> None:
+        self.engine.stop_all()
 
 
 
-def example():
-    global engine
+def example(master=None):
     s1 = Synth("s1")
     s1.freq(100)
     s2 = Synth("s2", wave_fn=Synth.WAVES['sine'])
@@ -142,16 +171,15 @@ def example():
     patches[0].synth(s2)
     patches[1].synth('s1')
     time.sleep(2)
-    engine.set_master_volume(0.5)
+    master.vol(0.5)
     time.sleep(2)
-    engine.set_master_volume(1.0)
+    master.vol(1.0)
     time.sleep(2)
     s1.stop()
     s2.stop()
 
 
 def run():
-    global engine
     print("Discovering audio devices...")
     try:
         oscar_server.initialize()
@@ -187,14 +215,19 @@ def run():
             sys.exit(0)
 
     chosen_device = devices[chosen_index]
-    #engine = Oscar(chosen_index, chosen_device.max_output_channels)
     engine = oscar_server.AudioEngine(chosen_index, chosen_device.max_output_channels)
+    Synth.bind_engine(engine)
+    Patch.bind_engine(engine)
+    Master.bind_engine(engine)
     print("\nEngine Initialization Completed\n")
     banner = "Oscar Interpreter Version 0.1"
     exitmsg = "Exiting Oscar..."
-    repl = code.InteractiveConsole(locals=globals())
+    master = Master()
+    vars = globals().copy()
+    vars.update({'master': master})
+    repl = code.InteractiveConsole(locals=vars)
     repl.interact(banner=banner, exitmsg=exitmsg)
-    engine.stop_all()
+    master.stopAll()
     oscar_server.terminate()
 
 if __name__ == '__main__':
