@@ -13,10 +13,12 @@ class Synth:
         'triangle': lambda table_size: np.abs(np.linspace(-1, 1, table_size, endpoint=False)).astype(np.float32)
     }
 
-    def __init__(self, name, frequency=440.0, amplitude=0.5, wave_fn=WAVES['sine'], fn_args={}):
+    def __init__(self, name, frequency=440.0, amplitude=0.5, offset=0.0, wave_fn=WAVES['sine'], fn_args={}):
+        #TODO most of these values shouldn't be stored here
         self.synth_name = name
         self.frequency = frequency
         self.amplitude = amplitude
+        self.phase_offset = offset
         self.wave_fn = wave_fn
         self.fn_args = fn_args
         self.table_size = 2048
@@ -51,6 +53,13 @@ class Synth:
         else:
             self.frequency = freq
             self.ptr.set_frequency(freq)
+
+    def phase(self, offset=None):
+        if offset == None:
+            return self.phase_offset
+        else:
+            self.phase_offset = offset % 1.0
+            self.ptr.set_phase_offset(offset)
 
     def amp(self, amp=None):
         if amp == None:
@@ -121,8 +130,10 @@ def example():
         Patch('p2', "s2", [1])
     ]
     time.sleep(2)
-    s1.amp(0.8)
-    s2.amp(0.8)
+    #s1.amp(0.8)
+    #s2.amp(0.8)
+    s2.phase(0.25)
+    time.sleep(2)
     s1.wave(wave_fn=Synth.WAVES['square'])
     time.sleep(2)
     patches[0].ch([1])

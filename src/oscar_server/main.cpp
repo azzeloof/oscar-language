@@ -60,20 +60,17 @@ std::vector<DeviceInfo> getDeviceDetails() {
 class Synth : public std::enable_shared_from_this<Synth> {
 private:
     std::atomic<bool> is_playing_{false};
-    double phase_{0.0};
+    std::atomic<double> phase_offset_{0.f};
     double sample_rate_;
-    double amplitude_;
-    double frequency_;
+    std::atomic<double> amplitude_{0.5f};
+    std::atomic<double> frequency_{440.f};
     std::vector<float> wavetable_;
-
 
 public:
     Synth(double sample_rate, std::vector<float> table) : 
-        sample_rate_(sample_rate), 
-        amplitude_(0.5), 
-        frequency_(440.0),
+        sample_rate_(sample_rate),
         wavetable_(std::move(table))
-    {
+    {   
         //setFrequency(this->frequency_);
         if (wavetable_.empty()) {
             wavetable_.push_back(0.f);
@@ -84,20 +81,26 @@ public:
     Synth(const Synth&) = delete;
     Synth& operator=(const Synth&) = delete;
 
-    void render(float* mono_out, unsigned long frames) {
+    void render(float* mono_out, unsigned long frames, double master_phase_start) {
         if (wavetable_.empty()) return;
         double table_size = static_cast<double>(wavetable_.size());
-        double phase_increment = this->frequency_ * table_size / this->sample_rate_;
+        double current_master_phase = master_phase_start;
+        double freq = frequency_.load();
+        double amp = amplitude_.load();
+        double sample_offset = phase_offset_.load() * table_size;
         for (unsigned long i=0; i<frames; ++i) {
-            unsigned int i0 = static_cast<unsigned int>(this->phase_);
-            unsigned int i1 = (i0 + 1) % wavetable_.size();
-            double frac = this->phase_ - i0;
+            double total_cycles = (current_master_phase * freq) / this->sample_rate_;
+            double phase_with_offset = (total_cycles * table_size) + sample_offset;
+            double phase_wrapped = fmod(phase_with_offset, table_size);
+            if (phase_wrapped < 0) phase_wrapped += table_size;
+            unsigned int i0 = static_cast<unsigned int>(phase_wrapped);
+            unsigned int i1 = (i0 + 1) % wavetable_.size(); // table_size instead?
+            double frac = phase_wrapped - i0;
             float val0 = wavetable_[i0];
             float val1 = wavetable_[i1];
             float current_sample = static_cast<float>(val0 + frac * (val1 - val0));
-            mono_out[i] = current_sample * this->amplitude_;
-            this->phase_ += phase_increment;
-            while (this->phase_ >= table_size) this->phase_ -= table_size;
+            mono_out[i] = current_sample * amp;
+            current_master_phase += 1.f; //externally tracked, just accounding locally here
         }
 
     }
@@ -105,15 +108,17 @@ public:
     void start() { is_playing_.store(true); }
     void stop() { is_playing_.store(false); }
     bool is_playing() const { return is_playing_.load(); }
-    void set_frequency(double freq) { this->frequency_ = freq; }
+    void set_frequency(double freq) { this->frequency_.store(freq); }
     double get_frequency() const { return frequency_; }
-    void set_amplitude(double amp) { this->amplitude_ = amp; }
+    void set_amplitude(double amp) { this->amplitude_.store(amp); }
     double get_amplitude() const { return amplitude_; }
     void update_wavetable(std::vector<float> new_table) {
         //TODO check that length is ok?
         wavetable_.clear();
         wavetable_.insert(wavetable_.end(), new_table.begin(), new_table.end());
     }
+    void set_phase_offset(double offset) { this->phase_offset_.store(offset); }
+    double get_phase_offset() const { return phase_offset_.load(); }
 };
 
 
@@ -140,12 +145,12 @@ private:
     double sample_rate_;
     int numOutputChannels_{0};
     float master_volume{1.f};
+    double master_phase_{0.f};
     
     std::map<std::string, std::shared_ptr<Synth>> synths_;
     std::map<std::string, std::shared_ptr<Patch>> patches_;
     
     std::recursive_mutex engine_mutex_;
-    
     std::vector<std::string> synth_names_to_delete_;
     std::vector<std::string> patch_names_to_delete_;
 
@@ -191,14 +196,13 @@ private:
         std::fill_n(out, framesPerBuffer * this->numOutputChannels_, 0.0f);
         
         std::vector<float> mono_buffer(framesPerBuffer);
-        
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         
         for (const auto& [patch_name, patch_ptr] : patches_) {
             auto synth_it = synths_.find(patch_ptr->get_synth_name());
             if (synth_it != synths_.end() && synth_it->second->is_playing()) {
                 std::shared_ptr<Synth> synth = synth_it->second;
-                synth->render(mono_buffer.data(), framesPerBuffer);
+                synth->render(mono_buffer.data(), framesPerBuffer, this->master_phase_);
                 
                 for (int channel_index : patch_ptr->get_channels()) {
                     if (channel_index < this->numOutputChannels_) {
@@ -209,6 +213,7 @@ private:
                 }
             }
         }
+        this->master_phase_ += framesPerBuffer;
         return paContinue;
     }
 
@@ -358,7 +363,9 @@ PYBIND11_MODULE(oscar_server, m) {
         .def("get_frequency", &Synth::get_frequency)
         .def("set_amplitude", &Synth::set_amplitude)
         .def("get_amplitude", &Synth::get_amplitude)
-        .def("update_wavetable", &Synth::update_wavetable);
+        .def("update_wavetable", &Synth::update_wavetable)
+        .def("set_phase_offset", &Synth::set_phase_offset)
+        .def("get_phase_offset", &Synth::get_phase_offset);
     
     py::class_<Patch, std::shared_ptr<Patch>>(m, "Patch")
         .def("get_channels", &Patch::get_channels)
