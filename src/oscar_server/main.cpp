@@ -265,7 +265,7 @@ public:
         std::vector<float> table_vec(table.data(), table.data() + table.size());
         auto it = synths_.find(name);
         if (it != synths_.end()) {
-            //TODO: Consider replacing existing wavetable
+            it->second->update_wavetable(table_vec);
             py::print("Synth '", name, "' already exists.");
             return it->second;
         } else {
@@ -284,6 +284,8 @@ public:
 
         auto it = patches_.find(patch_name);
         if (it != patches_.end()) {
+            it->second->set_synth_name(synth_name);
+            it->second->set_channels(channels);
             return it->second;
         } else {
             auto new_patch = std::make_shared<Patch>(synth_name, channels);

@@ -148,7 +148,6 @@ class Master(metaclass=EngineBoundType):
         self.engine.stop_all()
 
 
-
 def example(master=None):
     s1 = Synth("s1")
     s1.freq(100)
