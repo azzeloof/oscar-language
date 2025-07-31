@@ -65,13 +65,13 @@ private:
     std::atomic<double> amplitude_{0.5f};
     std::atomic<double> frequency_{440.f};
     std::vector<float> wavetable_;
+    mutable std::mutex wavetable_mutex_;
 
 public:
     Synth(double sample_rate, std::vector<float> table) : 
         sample_rate_(sample_rate),
         wavetable_(std::move(table))
     {   
-        //setFrequency(this->frequency_);
         if (wavetable_.empty()) {
             wavetable_.push_back(0.f);
         }
@@ -82,6 +82,7 @@ public:
     Synth& operator=(const Synth&) = delete;
 
     void render(float* mono_out, unsigned long frames, double master_phase_start) {
+        std::lock_guard<std::mutex> lock(wavetable_mutex_);
         if (wavetable_.empty()) return;
         double table_size = static_cast<double>(wavetable_.size());
         double current_master_phase = master_phase_start;
@@ -94,15 +95,14 @@ public:
             double phase_wrapped = fmod(phase_with_offset, table_size);
             if (phase_wrapped < 0) phase_wrapped += table_size;
             unsigned int i0 = static_cast<unsigned int>(phase_wrapped);
-            unsigned int i1 = (i0 + 1) % wavetable_.size(); // table_size instead?
+            unsigned int i1 = (i0 + 1) % wavetable_.size();
             double frac = phase_wrapped - i0;
             float val0 = wavetable_[i0];
             float val1 = wavetable_[i1];
             float current_sample = static_cast<float>(val0 + frac * (val1 - val0));
             mono_out[i] = current_sample * amp;
-            current_master_phase += 1.f; //externally tracked, just accounding locally here
+            current_master_phase += 1.f;
         }
-
     }
 
     void start() { is_playing_.store(true); }
@@ -113,9 +113,9 @@ public:
     void set_amplitude(double amp) { this->amplitude_.store(amp); }
     double get_amplitude() const { return amplitude_; }
     void update_wavetable(std::vector<float> new_table) {
-        //TODO check that length is ok?
-        wavetable_.clear();
-        wavetable_.insert(wavetable_.end(), new_table.begin(), new_table.end());
+        if (new_table.empty()) return;
+        std::lock_guard<std::mutex> lock(wavetable_mutex_);
+        wavetable_ = std::move(new_table);
     }
     void set_phase_offset(double offset) { this->phase_offset_.store(offset); }
     double get_phase_offset() const { return phase_offset_.load(); }
@@ -144,8 +144,8 @@ private:
     PaStream* stream_{nullptr};
     double sample_rate_;
     int numOutputChannels_{0};
-    float master_volume{1.f};
-    double master_phase_{0.f};
+    std::atomic<float> master_volume{1.f};
+    std::atomic<double> master_phase_{0.f};
     
     std::map<std::string, std::shared_ptr<Synth>> synths_;
     std::map<std::string, std::shared_ptr<Patch>> patches_;
@@ -155,34 +155,18 @@ private:
     std::vector<std::string> patch_names_to_delete_;
 
     void _cleanup() {
-        std::vector<std::string> synth_names_to_process;
-        std::vector<std::string> patch_names_to_process;
-        {
-            std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
-            if (synth_names_to_delete_.empty() && patch_names_to_delete_.empty()) return;
-            
-            synth_names_to_process.swap(synth_names_to_delete_);
-            patch_names_to_process.swap(patch_names_to_delete_);
-        }
-
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        if (synth_names_to_delete_.empty() && patch_names_to_delete_.empty()) return;
 
-        for (const auto& name : patch_names_to_process) {
+        for (const auto& name : patch_names_to_delete_) {
             patches_.erase(name);
         }
+        patch_names_to_delete_.clear();
 
-        for (const auto& synth_name : synth_names_to_process) {
-            std::vector<std::string> related_patches_to_delete;
-            for (const auto& [patch_name, patch_ptr] : patches_) {
-                if (patch_ptr->get_synth_name() == synth_name) {
-                    related_patches_to_delete.push_back(patch_name);
-                }
-            }
-            for (const auto& patch_name : related_patches_to_delete) {
-                patches_.erase(patch_name);
-            }
-            synths_.erase(synth_name);
+        for (const auto& name : synth_names_to_delete_) {
+            synths_.erase(name);
         }
+        synth_names_to_delete_.clear();
     }
 
     int paCallback(const void* inputBuffer, void* outputBuffer,
@@ -196,24 +180,28 @@ private:
         std::fill_n(out, framesPerBuffer * this->numOutputChannels_, 0.0f);
         
         std::vector<float> mono_buffer(framesPerBuffer);
+        
+        double current_master_phase = master_phase_.load();
+        float current_master_volume = master_volume.load();
+
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
         
         for (const auto& [patch_name, patch_ptr] : patches_) {
             auto synth_it = synths_.find(patch_ptr->get_synth_name());
             if (synth_it != synths_.end() && synth_it->second->is_playing()) {
                 std::shared_ptr<Synth> synth = synth_it->second;
-                synth->render(mono_buffer.data(), framesPerBuffer, this->master_phase_);
+                synth->render(mono_buffer.data(), framesPerBuffer, current_master_phase);
                 
                 for (int channel_index : patch_ptr->get_channels()) {
                     if (channel_index < this->numOutputChannels_) {
                         for (unsigned long frame = 0; frame < framesPerBuffer; ++frame) {
-                            out[frame * this->numOutputChannels_ + channel_index] += mono_buffer[frame] * this->master_volume;
+                            out[frame * this->numOutputChannels_ + channel_index] += mono_buffer[frame] * current_master_volume;
                         }
                     }
                 }
             }
         }
-        this->master_phase_ += framesPerBuffer;
+        master_phase_.store(current_master_phase + framesPerBuffer);
         return paContinue;
     }
 
@@ -262,14 +250,15 @@ public:
 
     std::shared_ptr<Synth> get_or_create_synth(const std::string& name, py::array_t<float> table) {
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
-        std::vector<float> table_vec(table.data(), table.data() + table.size());
         auto it = synths_.find(name);
         if (it != synths_.end()) {
-            it->second->update_wavetable(table_vec);
-            py::print("Synth '", name, "' already exists.");
+            std::vector<float> table_vec(table.data(), table.data() + table.size());
+            it->second->update_wavetable(std::move(table_vec));
+            py::print("Synth '", name, "' already exists. Wavetable updated.");
             return it->second;
         } else {
             py::print("Creating new wavetable synth with name: '", name, "'");
+            std::vector<float> table_vec(table.data(), table.data() + table.size());
             auto new_synth = std::make_shared<Synth>(this->sample_rate_, std::move(table_vec));
             synths_[name] = new_synth;
             return new_synth;
@@ -296,11 +285,22 @@ public:
 
     void delete_synth(const std::string& name) {
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        if (synths_.find(name) == synths_.end()) return;
+
+        // Add the synth to the deletion queue
         synth_names_to_delete_.push_back(name);
+
+        // Add all associated patches to the deletion queue
+        for (auto const& [patch_name, patch_ptr] : patches_) {
+            if (patch_ptr->get_synth_name() == name) {
+                patch_names_to_delete_.push_back(patch_name);
+            }
+        }
     }
 
     void delete_patch(const std::string& name) {
         std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+        if (patches_.find(name) == patches_.end()) return;
         patch_names_to_delete_.push_back(name);
     }
 
