@@ -252,6 +252,10 @@ class Master(metaclass=EngineBoundType):
         """Stops all synths in the engine."""
         self.engine.stop_all()
 
+    def shutdown(self) -> None:
+        """Shuts down the audio engine and terminates all streams."""
+        self.engine.shutdown()
+
 
 def example(master=None):
     """An example function to demonstrate the live coding framework."""
@@ -281,7 +285,6 @@ def example(master=None):
     s1.stop()
     s2.stop()
 
-
 def run():
     """The main entry point for the Oscar live coding environment."""
     print("Discovering audio devices...")
@@ -299,15 +302,15 @@ def run():
         print(f"An unexpected error occurred while enumerating devices: {e}")
         sys.exit(1)
 
-    print("Available Audio Devices:")
+    print("\nAvailable Audio Devices:")
     for device in devices:
         print(f"  {device}")
-    
-    chosen_index = -1
+        chosen_index = -1
     while True:
         try:
-            raw_input = input(f"Please enter the index of the device you want to use [0-{len(devices)-1}]: ")
+            raw_input = input(f"\nPlease enter the index of the device you want to use [0-{len(devices)-1}]: ")
             chosen_index = int(raw_input)
+                
             if 0 <= chosen_index < len(devices):
                 break
             else:
@@ -326,77 +329,56 @@ def run():
     Patch.bind_engine(engine)
     Master.bind_engine(engine)
     
-    print("Engine Initialization Completed")
+    print("\nEngine Initialization Completed\n")
     
     master = Master()
     vars = globals().copy()
     vars.update({'master': master})
-    repl = code.InteractiveConsole(locals=vars)
 
-    # Set up and run the socket server for live coding.
-    HOST, PORT = 'localhost', 5555
+
+    repl = code.InteractiveConsole(locals=vars)
+    repl.write("--- Oscar Live Coding Session ---\n")
+    repl.write("The 'session' object is your entry point. e.g., s1 = session.synth('bass')\n")
+        
+    HOST, PORT = "localhost", 5555
+    sel = selectors.DefaultSelector()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     server_socket.setblocking(False)
     server_socket.bind((HOST, PORT))
     server_socket.listen()
     
-    sel = selectors.DefaultSelector()
-    sel.register(server_socket, selectors.EVENT_READ)
+    print(f"--- Listening for VS Code on {HOST}:{PORT} ---")
     sel.register(sys.stdin, selectors.EVENT_READ)
+    sel.register(server_socket, selectors.EVENT_READ)
 
-    client_buffers = {}
-
-    print(f"Server Initialized at {HOST}:{PORT}")
-    print("Enter code at the prompt or connect from an editor.")
-
-    try:
-        while True:
-            events = sel.select(timeout=None)
-            for key, mask in events:
-                if key.fileobj == server_socket:
-                    conn, addr = server_socket.accept()
-                    conn.setblocking(False)
-                    sel.register(conn, selectors.EVENT_READ)
-                    client_buffers[conn] = b""
-                
-                elif key.fileobj is sys.stdin:
-                    line = sys.stdin.readline()
-                    if not line:
-                        raise EOFError
-                    repl.push(line)
-
+    while True:
+        # Check for I/O activity from keyboard or network
+        events = sel.select(timeout=0.01) # Use a short timeout
+        for key, mask in events:
+            if key.fileobj == server_socket:
+                conn, addr = server_socket.accept()
+                conn.setblocking(False)
+                sel.register(conn, selectors.EVENT_READ)
+            elif key.fileobj not in [sys.stdin, server_socket]:
+                conn = key.fileobj
+                data = conn.recv(4096)
+                if data:
+                    code_to_run = data.decode('utf-8')
+                    for line in code_to_run.splitlines():
+                        repl.push(line)
+                    repl.push('\n')
                 else:
-                    conn = key.fileobj
-                    try:
-                        data = conn.recv(4096)
-                        if data:
-                            print(data)
-                            client_buffers[conn] += data
-                            # Process all complete lines in the buffer.
-                            while b'\n' in client_buffers[conn]:
-                                code_to_run, client_buffers[conn] = client_buffers[conn].split(b'\n', 1)
-                                decoded_code = code_to_run.decode('utf-8').strip()
-                                if decoded_code:
-                                    repl.push(decoded_code + '\n')
-                        else:
-                            sel.unregister(conn)
-                            conn.close()
-                            del client_buffers[conn]
-                    except ConnectionResetError:
-                        sel.unregister(conn)
-                        conn.close()
-                        if conn in client_buffers:
-                            del client_buffers[conn]
-
-    except (KeyboardInterrupt, EOFError):
-        print("Exiting Oscar...")
-    finally:
-        print("Shutting down engine...")
-        engine.stop_all()
-        oscar_server.terminate()
-        sel.close()
-        server_socket.close()
-        print("Cleanup complete.")
+                    sel.unregister(conn)
+                    conn.close()
+            else: # Input from stdin
+                line = sys.stdin.readline()
+                if not line: raise EOFError
+                repl.push(line)
 
 if __name__ == '__main__':
-    run()
+    try:
+        run()
+    except (RuntimeError, KeyboardInterrupt, EOFError):
+        print("\nExiting Oscar.")
+    finally:
+        oscar_server.terminate()
