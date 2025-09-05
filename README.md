@@ -226,11 +226,6 @@ threading.Thread(target=update_freq, daemon=True).start()
 
 The `examples` directory contains several `.os` files that demonstrate the capabilities of OSCAR.
 
-
 ## Contributing
 
 Contributions are welcome! Please feel free to open an issue or submit a pull request.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
