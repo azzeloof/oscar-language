@@ -1,6 +1,6 @@
-# OSCAR Live Coding Environment
+# OSCAR Language
 
-OSCAR is a live coding environment for creating visuals using sound waves, which are plotted on an x-y oscilloscope. For example, two offset sine waves on different audio channels produce a circle. This repository contains the backend and live coding environment for the [OSCAR project](https://github.com/azzeloof/oscar-language). It is responsible for generating the audio signals that are then visualized by the [OSCAR Renderer](https://github.com/azzeloof/oscar-renderer) and can be interracted with via the [OSCAR VSCode plugin](https://github.com/azzeloof/oscar-vscode).
+OSCAR is a live coding environment for creating visuals using sound waves, which are plotted on an x-y oscilloscope. For example, two offset sine waves on different audio channels produce a circle. The language in this repo can be used for generating the audio signals that are then visualized by the [OSCAR Renderer](https://github.com/azzeloof/oscar-render) (or an oscilloscope) and can be interracted with via the [OSCAR VSCode plugin](https://github.com/azzeloof/oscar-vscode).
 
 ## Getting Started
 
@@ -8,7 +8,7 @@ OSCAR is a live coding environment for creating visuals using sound waves, which
 
 *   Python 3.7+
 *   [PortAudio](http://www.portaudio.com/): A cross-platform audio I/O library. You can install it on macOS with `brew install portaudio` or on Debian-based Linux with `sudo apt-get install libportaudio-dev`.
-*   The [OSCAR Renderer](https://github.com/adamz/oscar-renderer) must be running to visualize the output.
+*   The [OSCAR Renderer](https://github.com/adamz/oscar-render) must be running to visualize the output.
 
 ### Installation
 
@@ -226,11 +226,6 @@ threading.Thread(target=update_freq, daemon=True).start()
 
 The `examples` directory contains several `.os` files that demonstrate the capabilities of OSCAR.
 
-
 ## Contributing
 
 Contributions are welcome! Please feel free to open an issue or submit a pull request.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
