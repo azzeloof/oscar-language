@@ -1,10 +1,16 @@
+import os
+
+# Create the build directory if it doesn't exist
+if not os.path.exists('build'):
+    os.makedirs('build')
+
 # setup.py
 
 import sys
 from pybind11.setup_helpers import Pybind11Extension, build_ext
 from setuptools import setup
 
-__version__ = "0.0.2" # New version
+__version__ = "0.0.2"
 
 # Platform-specific linker arguments
 extra_link_args = []
@@ -20,7 +26,6 @@ ext_modules = [
     Pybind11Extension(
         "oscar_server",
         ["main.cpp"],
-        # The key change: tell the linker to find and use the PortAudio library
         libraries=["portaudio"],
         define_macros=[("VERSION_INFO", __version__)],
         extra_link_args=extra_link_args,
@@ -38,4 +43,5 @@ setup(
     cmdclass={"build_ext": build_ext},
     zip_safe=False,
     python_requires=">=3.7",
+    options={'build': {'build_lib': 'build/lib'}, 'egg_info': {'egg_base': 'build'}},
 )

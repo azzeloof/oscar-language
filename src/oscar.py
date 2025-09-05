@@ -320,17 +320,18 @@ def run(emulator=True, nCh=4):
         print(f"An unexpected error occurred while enumerating devices: {e}")
         sys.exit(1)
 
+    chosen_index = None
+
     if emulator:
-        try:
-            for deviceName in devices:
-                print(deviceName)
-                if "OSCAR Renderer" in str(deviceName):
-                    chosen_index = devices.index(deviceName)
-                    break
-        except Exception as e:
-            print("Could not bind to OSCAR Renderer. Check that it's running and try again.")
-            sys.exit(1)
-    else:
+        for deviceName in devices:
+            print(deviceName)
+            if "OSCAR Renderer" in str(deviceName):
+                chosen_index = devices.index(deviceName)
+                break
+        if chosen_index == None:
+            emulator = False
+            print("Could not bind to OSCAR Renderer.")
+    if not emulator:
         print("\nAvailable Audio Devices:")
         for device in devices:
             print(f"  {device}")

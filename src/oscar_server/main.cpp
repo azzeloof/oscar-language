@@ -49,7 +49,6 @@ std::vector<DeviceInfo> getDeviceDetails() {
     for (int i = 0; i < numDevices; ++i) {
         const PaDeviceInfo* deviceInfo = Pa_GetDeviceInfo(i);
         if (deviceInfo) {
-            // This line now works because DeviceInfo is a complete type
             deviceDetails.push_back({i, std::string(deviceInfo->name), deviceInfo->maxOutputChannels});
         }
     }
@@ -100,7 +99,7 @@ public:
             float val1 = wavetable_[i1];
             float current_sample = static_cast<float>(val0 + frac * (val1 - val0));
             mono_out[i] = current_sample * amp;
-            current_master_phase += 1.f; //externally tracked, just accounding locally here
+            current_master_phase += 1.f; //externally tracked, just accounting locally here
         }
 
     }
