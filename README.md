@@ -224,13 +224,8 @@ threading.Thread(target=update_freq, daemon=True).start()
 
 ## Examples
 
-The `examples` directory contains several `.os` files that demonstrate the capabilities of OSCAR. You can run them by piping them into the `oscar.py` script:
+The `examples` directory contains several `.os` files that demonstrate the capabilities of OSCAR.
 
-```bash
-python src/oscar.py < examples/circles.os
-```
-
-This will produce some fun shapes on the OSCAR Renderer.
 
 ## Contributing
 
