@@ -2,7 +2,6 @@ cffi==1.17.1
 cryptography==45.0.5
 mido==1.3.3
 numpy==2.3.0
-oscar_server @ file:///home/adam/dev/oscar-lc/src/oscar_server
 packaging==25.0
 PyAudio==0.2.14
 pybind11==2.13.6
@@ -14,3 +13,4 @@ rpm==0.4.0
 ruamel.yaml==0.18.14
 ruamel.yaml.clib==0.2.12
 urllib3==2.5.0
+./src/oscar_server

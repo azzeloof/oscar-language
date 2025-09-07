@@ -323,12 +323,16 @@ def run(emulator=True, nCh=4):
     chosen_index = None
 
     if emulator:
+        target_device_name = "OSCAR Renderer"
+        if sys.platform == 'darwin':
+            target_device_name = "BlackHole"
+
         for deviceName in devices:
             print(deviceName)
-            if "OSCAR Renderer" in str(deviceName):
+            if target_device_name in str(deviceName):
                 chosen_index = devices.index(deviceName)
                 break
-        if chosen_index == None:
+        if chosen_index is None:
             emulator = False
             print("Could not bind to OSCAR Renderer.")
     if not emulator:
