@@ -1,4 +1,5 @@
 # OSCAR Language
+**OS**cilloscope **C**ode **A**nd **R**enderer
 
 OSCAR is a live coding environment for creating visuals using sound waves, which are plotted on an x-y oscilloscope. For example, two offset sine waves on different audio channels produce a circle. The language in this repo can be used for generating the audio signals that are then visualized by the [OSCAR Renderer](https://github.com/azzeloof/oscar-render) (or an oscilloscope) and can be interracted with via the [OSCAR VSCode plugin](https://github.com/azzeloof/oscar-vscode).
 
