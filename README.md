@@ -23,7 +23,7 @@ OSCAR is a live coding environment for creating visuals using sound waves, which
     python3 -m venv .venv
     source .venv/bin/activate
     ```
-    The python-rtmidi library doesn't currently work for Python 3.12 on Apple Silicon Macs, so use Python 3.12 for now.
+    The python-rtmidi library doesn't currently work for Python 3.13 on Apple Silicon Macs, so use Python 3.12 for now.
 
 3.  **Install dependencies:**
     ```bash
