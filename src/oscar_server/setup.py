@@ -14,6 +14,8 @@ __version__ = "0.0.2"
 
 # Platform-specific linker arguments
 extra_link_args = []
+include_dirs = []
+library_dirs = []
 if sys.platform == 'darwin':
     # On macOS, PortAudio might depend on CoreAudio services
     extra_link_args.extend([
@@ -21,11 +23,15 @@ if sys.platform == 'darwin':
         "-framework", "AudioToolbox",
         "-framework", "CoreFoundation"
     ])
+    include_dirs.append("/opt/homebrew/include")
+    library_dirs.append("/opt/homebrew/lib")
 
 ext_modules = [
     Pybind11Extension(
         "oscar_server",
         ["main.cpp"],
+        include_dirs=include_dirs,
+        library_dirs=library_dirs,
         libraries=["portaudio"],
         define_macros=[("VERSION_INFO", __version__)],
         extra_link_args=extra_link_args,
