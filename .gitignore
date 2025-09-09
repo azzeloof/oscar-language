@@ -1,2 +1,2 @@
 /src/oscar_server/build 
-.vscode
+.vscode/src/__pycache__/

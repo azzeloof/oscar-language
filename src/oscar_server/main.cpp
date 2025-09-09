@@ -64,6 +64,7 @@ private:
     std::atomic<double> amplitude_{0.5f};
     std::atomic<double> frequency_{440.f};
     std::vector<float> wavetable_;
+    std::atomic<double> master_phase_{0.f};
 
 public:
     Synth(double sample_rate, std::vector<float> table) : 
@@ -118,6 +119,29 @@ public:
     }
     void set_phase_offset(double offset) { this->phase_offset_.store(offset); }
     double get_phase_offset() const { return phase_offset_.load(); }
+    void set_master_phase(double phase) { master_phase_.store(phase); }
+    double get_master_phase() const { return master_phase_.load(); }
+
+    void smooth_set_frequency(double new_freq) {
+        const double old_freq = frequency_.load();
+        const double old_phase_offset = phase_offset_.load();
+
+        // Calculate time using the internal master phase
+        const double time_at_change = master_phase_.load() / sample_rate_;
+
+        // Calculate the necessary phase shift: p_new = p_old + t * (f_old - f_new)
+        const double phase_correction = time_at_change * (old_freq - new_freq);
+        double new_phase_offset = old_phase_offset + phase_correction;
+
+        // Wrap the phase offset to the [0.0, 1.0) range
+        new_phase_offset = fmod(new_phase_offset, 1.0);
+        if (new_phase_offset < 0.0) {
+            new_phase_offset += 1.0;
+        }
+
+        frequency_.store(new_freq);
+        phase_offset_.store(new_phase_offset);
+    }
 };
 
 
@@ -201,6 +225,7 @@ private:
             auto synth_it = synths_.find(patch_ptr->get_synth_name());
             if (synth_it != synths_.end() && synth_it->second->is_playing()) {
                 std::shared_ptr<Synth> synth = synth_it->second;
+                synth->set_master_phase(this->master_phase_);
                 synth->render(mono_buffer.data(), framesPerBuffer, this->master_phase_);
                 
                 for (int channel_index : patch_ptr->get_channels()) {
@@ -366,7 +391,8 @@ PYBIND11_MODULE(oscar_server, m) {
         .def("get_amplitude", &Synth::get_amplitude)
         .def("update_wavetable", &Synth::update_wavetable)
         .def("set_phase_offset", &Synth::set_phase_offset)
-        .def("get_phase_offset", &Synth::get_phase_offset);
+        .def("get_phase_offset", &Synth::get_phase_offset)
+        .def("smooth_set_frequency", &Synth::smooth_set_frequency);
     
     py::class_<Patch, std::shared_ptr<Patch>>(m, "Patch")
         .def("get_channels", &Patch::get_channels)
