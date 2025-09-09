@@ -5,6 +5,7 @@ Adam Zeloof
 9/5/2025
 """
 
+
 s1 = Synth('s1')
 s2 = Synth('s2')
 
@@ -44,3 +45,11 @@ scope.ch[1].alphaScale(300)
 scope.ch[1].samples(20000)
 scope.ch[1].color(0, 255, 255)
 scope.ch[1].color(0, 193, 220, 255)
+
+
+s1.freq(440)
+s2.freq(440.0)
+s2.amp(0.5)
+s2.phase(0.25)
+
+s2.freq(440.0, smooth=True)

@@ -205,12 +205,15 @@ class Synth(metaclass=EngineBoundType):
         """Returns True if the synth is currently playing."""
         return self.ptr.is_playing()
 
-    def freq(self, freq:float = None) -> None | float:
+    def freq(self, freq:float = None, smooth=False) -> None | float:
         """Gets or sets the frequency of the synth."""
         if freq == None:
             return self.ptr.get_frequency()
         else:
-            self.ptr.set_frequency(freq)
+            if smooth:
+                self.ptr.smooth_set_frequency(freq)
+            else:
+                self.ptr.set_frequency(freq)
 
     def phase(self, offset:float = None) -> None | float:
         """Gets or sets the phase offset of the synth."""
