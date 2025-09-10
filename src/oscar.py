@@ -112,24 +112,26 @@ class MidiInput:
 
 class Control:
     """A simple observable value for controlling parameters."""
-    def __init__(self, value=0):
+    def __init__(self, value=0, cb=None):
         self.value = value
-        self.callbacks = {}
+        self.callback = cb
 
-    def register_callback(self, identifier, callback) -> None:
-        """Registers a callback function to be called when the value changes."""
-        self.callbacks.update({identifier: callback})
+    #def register_callback(self, identifier, callback) -> None:
+    #    """Registers a callback function to be called when the value changes."""
+    #    self.callbacks.update({identifier: callback})
 
-    def unregister_callback(self, identifier) -> None:
-        """Unregisters a callback function."""
-        if identifier in self.callbacks:
-            del self.callbacks[identifier]
+    #def unregister_callback(self, identifier) -> None:
+    #    """Unregisters a callback function."""
+    #    if identifier in self.callbacks:
+    #        del self.callbacks[identifier]
 
     def update(self, value) -> None:
         """Updates the value and calls all registered callbacks."""
         self.value = value
-        for callback in self.callbacks.values():
-            callback(value)
+        if self.callback != None:
+            self.callback(value)
+        #for callback in self.callbacks.values():
+        #    callback(value)
 
 
 class EngineBoundType(type):
@@ -281,6 +283,13 @@ class Master(metaclass=EngineBoundType):
     """A class for controlling global engine parameters."""
     def __init__(self):
         self.engine = self.__class__.get_engine()
+        self.clockActions = {}
+        self.time = time.time()
+        self.clockRunning = True
+        self.clock = threading.Thread(
+            target=self.ticktock,
+            daemon=True)
+        self.clock.start()
 
     def vol(self, v:float|None = None) -> None | float:
         """Gets or sets the master volume of the engine."""
@@ -297,12 +306,32 @@ class Master(metaclass=EngineBoundType):
         """Returns a list of all patches currently in use."""
         return self.engine.list_patches()
     
+    def registerClockAction(self, action: dict) -> None:
+        self.clockActions.update(action)
+
+    def removeClockAction(self, action: str) -> None:
+        if action in self.clockActions:
+            del self.clockActions[action]
+
+    def ticktock(self) -> None:
+        while self.clockRunning:
+            self.time = time.time()
+            for _, action in self.clockActions.items():
+                try:
+                    action(self.time)
+                except RuntimeError as e:
+                    print(e)
+            time.sleep(1/60.0) # 60 Hz update rate
+
+    
     def stopAll(self) -> None:
         """Stops all synths in the engine."""
         self.engine.stop_all()
 
     def shutdown(self) -> None:
         """Shuts down the audio engine and terminates all streams."""
+        if self.clock.is_alive():
+            self.clock.join()
         self.engine.shutdown()
 
 
