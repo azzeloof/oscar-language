@@ -5,6 +5,8 @@ OSCAR is a live coding environment for creating visuals using sound waves, which
 
 ![](assets/oscar-ss-with-vscode.png)
 
+**This is still under active development and may change significantly**
+
 ## Getting Started
 
 ### Prerequisites
