@@ -4,6 +4,7 @@ import oscar_server
 import sys
 import code
 import socket
+import json
 import selectors
 from collections.abc import Callable
 import threading
@@ -57,7 +58,7 @@ class Renderer:
         self.ch = [Scope(i, self.client) for i in range(nCh)]
 
 class MidiInput:
-    """A class to handle MIDI input in a separate thread."""
+    """A class to handle MIDI input using mido's native callbacks."""
     def devices():
         """Returns a list of available MIDI input devices."""
         return mido.get_input_names()
@@ -65,49 +66,19 @@ class MidiInput:
     def __init__(self, device:int = 0, callback:Callable = None):
         self.device = device
         self.callback = callback
-        self.queue = queue.Queue()
-        self.running = True
-        self.listen_thread = threading.Thread(
-            target=self.listener,
-            args=(self.device, self.queue),
-            daemon=True)
-        self.parse_thread = threading.Thread(
-            target=self.parse,
-            daemon=True)
-        self.listen_thread.start()
-        self.parse_thread.start()
-
-    def listener(self, port, message_queue) -> None:
-        """The MIDI listener thread function."""
+        self.port = None
         try:
-            with mido.open_input(port) as in_port:
-                while self.running:
-                    msg = in_port.poll()
-                    if msg:
-                        message_queue.put(msg)
-                    time.sleep(0.01)
+            # mido handles the background threading natively when a callback is provided
+            self.port = mido.open_input(self.device, callback=self.callback)
         except Exception as e:
-            print(f"Error in MIDI listener: {e}")
-
-    def parse(self) -> None:
-        """The MIDI parser thread function."""
-        while self.running:
-            try:
-                msg = self.queue.get_nowait()
-                if self.callback != None:
-                    self.callback(msg)
-            except queue.Empty:
-                time.sleep(0.01)
+            print(f"Error opening MIDI input: {e}")
 
     def stop(self) -> None:
-        """Stops the MIDI listener and parser threads gracefully."""
-        print("Stopping MIDI threads...")
-        self.running = False
-        if self.listen_thread.is_alive():
-            self.listen_thread.join()
-        if self.parse_thread.is_alive():
-            self.parse_thread.join()
-        print("MIDI threads stopped.")
+        """Stops the MIDI input gracefully."""
+        print("Stopping MIDI input...")
+        if self.port:
+            self.port.close()
+        print("MIDI input stopped.")
 
 
 class Control:
@@ -166,7 +137,7 @@ class Synth(metaclass=EngineBoundType):
         'triangle': lambda table_size: 1-2*np.abs(np.linspace(-1, 1, table_size, endpoint=False)).astype(np.float32)
     }
 
-    def __init__(self, name:str, frequency:float = 440.0, amplitude:float = 0.5, offset:float = 0.0, wave_fn:Callable = WAVES['sine'], fn_args:dict = {}):
+    def __init__(self, name:str, frequency:float = 440.0, amplitude:float = 0.5, muted=False, offset:float = 0.0, wave_fn:Callable = WAVES['sine'], fn_args:dict = {}):
         self.engine = self.__class__.get_engine()
         self.synth_name = name
         self.wave_fn = wave_fn
@@ -177,6 +148,7 @@ class Synth(metaclass=EngineBoundType):
         self.ptr = self.engine.get_or_create_synth(self.synth_name, self.wavetable)
         self.freq(frequency)
         self.amp(amplitude)
+        self.mute(muted)
         self.phase(offset)
         self.start()
     
@@ -231,6 +203,12 @@ class Synth(metaclass=EngineBoundType):
         else:
             self.ptr.set_amplitude(amp)
 
+    def mute(self, muted:bool = None) -> None | bool:
+        if muted == None:
+            return self.ptr.get_muted()
+        else:
+            self.ptr.set_muted(muted)
+            
     def wave(self, wave_fn:callable = None, fn_args:dict = {}, norm:bool = True) -> None | Callable:
         """Gets or sets the wavetable function for the synth."""
         if wave_fn == None:
@@ -253,7 +231,11 @@ class Patch(metaclass=EngineBoundType):
         else:
             synth_name = synth.name()
         self.synth_name = synth_name
+        # Natively cache the python lists so JSON doesn't panic
+        self._py_channels = channels
         self.ptr = self.engine.get_or_create_patch(self.patch_name, self.synth_name, channels)
+        global ACTIVE_PATCHES
+        ACTIVE_PATCHES[self.patch_name] = self
 
     def get_synth_name(self) -> str:
         """Returns the name of the synth being patched."""
@@ -335,6 +317,34 @@ class Master(metaclass=EngineBoundType):
         self.engine.shutdown()
 
 
+class BroadcastStdout:
+    """Intercepts print() and errors, echoing them to the terminal AND connected sockets."""
+
+    def __init__(self, original_stdout):
+        self.original = original_stdout
+        self.clients = set()
+
+    def write(self, msg):
+        self.original.write(msg)  # Keep terminal output intact
+
+        dead_clients = set()
+        for client in self.clients:
+            try:
+                # We use send() instead of sendall() because the sockets are non-blocking
+                client.send(msg.encode('utf-8'))
+            except BlockingIOError:
+                pass  # Client buffer is full, skip for now to prevent audio stutter
+            except Exception:
+                dead_clients.add(client)  # Connection dropped
+
+        for c in dead_clients:
+            self.clients.discard(c)
+
+    def flush(self):
+        self.original.flush()
+
+ACTIVE_PATCHES = {}
+
 def run(emulator=True, nCh=4):
     """The main entry point for the Oscar live coding environment."""
     print("Discovering audio devices...")
@@ -412,6 +422,7 @@ def run(emulator=True, nCh=4):
     HOST, PORT = "localhost", 5555
     sel = selectors.DefaultSelector()
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.setblocking(False)
     server_socket.bind((HOST, PORT))
     server_socket.listen()
@@ -420,29 +431,51 @@ def run(emulator=True, nCh=4):
     sel.register(sys.stdin, selectors.EVENT_READ)
     sel.register(server_socket, selectors.EVENT_READ)
 
+    broadcast_out = BroadcastStdout(sys.stdout)
+    sys.stdout = broadcast_out
+    sys.stderr = broadcast_out
+
+    def broadcast_state():
+        global ACTIVE_PATCHES
+        state = {
+            "synths": master.getSynths(),
+            "channels": list(range(chosen_device.max_output_channels)),
+            "patches": [{"synth": p.synth(), "channels": p.ch()} for p in ACTIVE_PATCHES.values()]
+        }
+        print(f"__STATE_SYNC__:{json.dumps(state)}")
+
     while True:
         # Check for I/O activity from keyboard or network
-        events = sel.select(timeout=0.01) # Use a short timeout
+        events = sel.select(timeout=0.01)  # Use a short timeout
         for key, mask in events:
             if key.fileobj == server_socket:
                 conn, addr = server_socket.accept()
                 conn.setblocking(False)
                 sel.register(conn, selectors.EVENT_READ)
+                broadcast_out.clients.add(conn)
             elif key.fileobj not in [sys.stdin, server_socket]:
                 conn = key.fileobj
-                data = conn.recv(4096)
-                if data:
-                    code_to_run = data.decode('utf-8')
-                    for line in code_to_run.splitlines():
-                        repl.push(line)
-                    repl.push('\n')
-                else:
+                try:
+                    data = conn.recv(4096)
+                    if data:
+                        code_to_run = data.decode('utf-8')
+                        for line in code_to_run.splitlines():
+                            repl.push(line)
+                        repl.push('\n')
+                        broadcast_state()
+                    else:
+                        sel.unregister(conn)
+                        broadcast_out.clients.discard(conn)
+                        conn.close()
+                except ConnectionError:
                     sel.unregister(conn)
+                    broadcast_out.clients.discard(conn)
                     conn.close()
-            else: # Input from stdin
+            else:  # Input from stdin
                 line = sys.stdin.readline()
                 if not line: raise EOFError
                 repl.push(line)
+                broadcast_state()
 
 if __name__ == '__main__':
     try:
