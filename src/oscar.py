@@ -209,6 +209,13 @@ class Synth(metaclass=EngineBoundType):
         else:
             self.ptr.set_muted(muted)
             
+    def visualize(self, state:bool = None) -> None | bool:
+        """Gets or sets whether this synth broadcasts telemetry over UDP (port 9393)."""
+        if state == None:
+            return self.ptr.get_visualize()
+        else:
+            self.ptr.set_visualize(state)
+            
     def wave(self, wave_fn:callable = None, fn_args:dict = {}, norm:bool = True) -> None | Callable:
         """Gets or sets the wavetable function for the synth."""
         if wave_fn == None:

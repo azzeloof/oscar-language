@@ -9,7 +9,6 @@ import socket
 
 import os
 # Add the project's source directory to the Python path.
-# This allows us to import the `oscar` module directly.
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "src")))
 from oscar import Synth, Patch, Master, MidiInput, run
 

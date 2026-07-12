@@ -84,6 +84,44 @@ OSCAR comes with several built-in waveforms:
 
 You can also define your own custom waveforms using a Python function that returns a NumPy array. This allows for complex, dynamic waveform generation.
 
+#### Visualizing Synths (Telemetry)
+
+If you'd like to inspect the generated audio buffer of a specific synth in a third-party visualizer or oscilloscope (without affecting the master audio output), you can enable UDP telemetry:
+
+```python
+# Broadcasts the audio buffers of 's1' over UDP on 127.0.0.1:9393
+s1.visualize(True)
+```
+
+The C++ audio engine runs a background thread that publishes these audio frames as UDP packets. The binary structure of each packet is as follows:
+- `char synth_name[32]`: A null-terminated string identifying the synth.
+- `int32 num_samples`: The number of 32-bit floats contained in this packet.
+- `float32 samples[1024]`: The actual audio frame data. Only the first `num_samples` floats are valid.
+
+For example, a subscriber in Python could unpack the incoming data like this:
+
+```python
+import socket
+import struct
+
+sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.bind(("127.0.0.1", 9393))
+
+# 32 chars + 1 integer
+header_size = struct.calcsize("32s i")
+
+while True:
+    data, _ = sock.recvfrom(8192)
+    synth_name_b, num_samples = struct.unpack("32s i", data[:header_size])
+    
+    # Clean up the null-padded string
+    synth_name = synth_name_b.decode('utf-8').rstrip('\x00')
+    
+    # Read the float array
+    samples = struct.unpack(f"{num_samples}f", data[header_size:header_size + (num_samples * 4)])
+    print(f"Received {num_samples} samples from {synth_name}")
+```
+
 ### Patches
 
 A `Patch` routes the output of a `Synth` to one or more audio channels. The first channel is typically used for the X-axis of the oscilloscope, and the second channel for the Y-axis.

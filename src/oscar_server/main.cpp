@@ -11,7 +11,49 @@
 #include <pybind11/stl.h>
 #include <string>
 #include <vector>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <unistd.h>
+#include <cstring>
+#include <thread>
+#include <array>
 
+struct TelemetryPacket {
+    char synth_name[32];
+    int num_samples;
+    uint64_t block_index;
+    float samples[1024];
+};
+
+template <typename T, size_t Size>
+class LockFreeQueue {
+private:
+    std::array<T, Size> buffer_;
+    std::atomic<size_t> head_{0};
+    std::atomic<size_t> tail_{0};
+
+public:
+    bool push(const T& item) {
+        size_t current_tail = tail_.load(std::memory_order_relaxed);
+        size_t next_tail = (current_tail + 1) % Size;
+        if (next_tail == head_.load(std::memory_order_acquire)) {
+            return false; // Full
+        }
+        buffer_[current_tail] = item;
+        tail_.store(next_tail, std::memory_order_release);
+        return true;
+    }
+
+    bool pop(T& item) {
+        size_t current_head = head_.load(std::memory_order_relaxed);
+        if (current_head == tail_.load(std::memory_order_acquire)) {
+            return false; // Empty
+        }
+        item = buffer_[current_head];
+        head_.store((current_head + 1) % Size, std::memory_order_release);
+        return true;
+    }
+};
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
@@ -67,10 +109,12 @@ private:
   std::atomic<double> frequency_{440.f};
   std::vector<float> wavetable_;
   std::atomic<double> master_phase_{0.f};
+  std::atomic<bool> publish_telemetry_{false};
+  std::string name_;
 
 public:
-  Synth(double sample_rate, std::vector<float> table)
-      : sample_rate_(sample_rate), wavetable_(std::move(table)) {
+  Synth(std::string name, double sample_rate, std::vector<float> table)
+      : name_(std::move(name)), sample_rate_(sample_rate), wavetable_(std::move(table)) {
     // setFrequency(this->frequency_);
     if (wavetable_.empty()) {
       wavetable_.push_back(0.f);
@@ -128,6 +172,9 @@ public:
   double get_phase_offset() const { return phase_offset_.load(); }
   void set_master_phase(double phase) { master_phase_.store(phase); }
   double get_master_phase() const { return master_phase_.load(); }
+  void set_visualize(bool viz) { publish_telemetry_.store(viz); }
+  bool get_visualize() const { return publish_telemetry_.load(); }
+  const std::string& get_name() const { return name_; }
 
   void smooth_set_frequency(double new_freq) {
     const double old_freq = frequency_.load();
@@ -174,6 +221,11 @@ private:
   int numOutputChannels_{0};
   float master_volume{1.f};
   double master_phase_{0.f};
+  uint64_t current_block_index_{0};
+
+  LockFreeQueue<TelemetryPacket, 64> telemetry_queue_;
+  std::atomic<bool> telemetry_running_{true};
+  std::thread telemetry_thread_;
 
   std::map<std::string, std::shared_ptr<Synth>> synths_;
   std::map<std::string, std::shared_ptr<Patch>> patches_;
@@ -226,6 +278,8 @@ private:
 
     std::vector<float> mono_buffer(framesPerBuffer);
     std::lock_guard<std::recursive_mutex> lock(engine_mutex_);
+    
+    current_block_index_++;
 
     for (const auto &[patch_name, patch_ptr] : patches_) {
       auto synth_it = synths_.find(patch_ptr->get_synth_name());
@@ -233,6 +287,24 @@ private:
         std::shared_ptr<Synth> synth = synth_it->second;
         synth->set_master_phase(this->master_phase_);
         synth->render(mono_buffer.data(), framesPerBuffer, this->master_phase_);
+
+        if (synth->get_visualize()) {
+            TelemetryPacket packet;
+            strncpy(packet.synth_name, synth->get_name().c_str(), sizeof(packet.synth_name) - 1);
+            packet.synth_name[sizeof(packet.synth_name) - 1] = '\0';
+            packet.block_index = current_block_index_;
+            
+            unsigned long frames_left = framesPerBuffer;
+            unsigned long offset = 0;
+            while (frames_left > 0) {
+                unsigned long to_copy = std::min(frames_left, (unsigned long)1024);
+                packet.num_samples = to_copy;
+                std::memcpy(packet.samples, mono_buffer.data() + offset, to_copy * sizeof(float));
+                telemetry_queue_.push(packet);
+                frames_left -= to_copy;
+                offset += to_copy;
+            }
+        }
 
         for (int channel_index : patch_ptr->get_channels()) {
           if (channel_index < this->numOutputChannels_) {
@@ -257,9 +329,34 @@ private:
         inputBuffer, outputBuffer, framesPerBuffer, timeInfo, statusFlags);
   }
 
+  void telemetryLoop() {
+      int sock = socket(AF_INET, SOCK_DGRAM, 0);
+      if (sock < 0) return;
+      
+      struct sockaddr_in dest_addr;
+      memset(&dest_addr, 0, sizeof(dest_addr));
+      dest_addr.sin_family = AF_INET;
+      dest_addr.sin_port = htons(9393);
+      inet_pton(AF_INET, "127.0.0.1", &dest_addr.sin_addr);
+
+      TelemetryPacket packet;
+      while (telemetry_running_.load()) {
+          bool sent_any = false;
+          while (telemetry_queue_.pop(packet)) {
+              sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
+              sent_any = true;
+          }
+          if (!sent_any) {
+              std::this_thread::sleep_for(std::chrono::milliseconds(2));
+          }
+      }
+      close(sock);
+  }
+
 public:
   AudioEngine(int deviceIndex, int numChannels)
       : numOutputChannels_(numChannels) {
+    telemetry_thread_ = std::thread(&AudioEngine::telemetryLoop, this);
     const PaDeviceInfo *deviceInfo = Pa_GetDeviceInfo(deviceIndex);
     if (deviceInfo == nullptr)
       throw std::runtime_error("Invalid device index");
@@ -291,6 +388,10 @@ public:
   }
 
   ~AudioEngine() {
+    telemetry_running_.store(false);
+    if (telemetry_thread_.joinable()) {
+        telemetry_thread_.join();
+    }
     if (stream_) {
       Pa_StopStream(stream_);
       Pa_CloseStream(stream_);
@@ -310,7 +411,7 @@ public:
     } else {
       py::print("Creating new wavetable synth with name: '", name, "'");
       auto new_synth =
-          std::make_shared<Synth>(this->sample_rate_, std::move(table_vec));
+          std::make_shared<Synth>(name, this->sample_rate_, std::move(table_vec));
       synths_[name] = new_synth;
       return new_synth;
     }
@@ -415,6 +516,8 @@ PYBIND11_MODULE(oscar_server, m) {
       .def("update_wavetable", &Synth::update_wavetable)
       .def("set_phase_offset", &Synth::set_phase_offset)
       .def("get_phase_offset", &Synth::get_phase_offset)
+      .def("set_visualize", &Synth::set_visualize)
+      .def("get_visualize", &Synth::get_visualize)
       .def("smooth_set_frequency", &Synth::smooth_set_frequency);
 
   py::class_<Patch, std::shared_ptr<Patch>>(m, "Patch")
