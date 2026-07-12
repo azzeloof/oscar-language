@@ -375,6 +375,8 @@ def run(emulator=True, nCh=4):
         target_device_name = "OSCAR Renderer"
         if sys.platform == 'darwin':
             target_device_name = "BlackHole"
+        elif sys.platform == 'win32':
+            target_device_name = "CABLE Input"
 
         for deviceName in devices:
             print(deviceName)
@@ -435,7 +437,18 @@ def run(emulator=True, nCh=4):
     server_socket.listen()
     
     print(f"--- Listening for VS Code on {HOST}:{PORT} ---")
-    sel.register(sys.stdin, selectors.EVENT_READ)
+    
+    stdin_queue = queue.Queue()
+    if sys.platform == 'win32':
+        def _read_stdin():
+            for line in sys.stdin:
+                stdin_queue.put(line)
+            stdin_queue.put(None) # EOF
+        t = threading.Thread(target=_read_stdin, daemon=True)
+        t.start()
+    else:
+        sel.register(sys.stdin, selectors.EVENT_READ)
+        
     sel.register(server_socket, selectors.EVENT_READ)
 
     broadcast_out = BroadcastStdout(sys.stdout)
@@ -478,9 +491,16 @@ def run(emulator=True, nCh=4):
                     sel.unregister(conn)
                     broadcast_out.clients.discard(conn)
                     conn.close()
-            else:  # Input from stdin
+            elif key.fileobj == sys.stdin:  # Input from stdin (Mac/Linux)
                 line = sys.stdin.readline()
                 if not line: raise EOFError
+                repl.push(line)
+                broadcast_state()
+
+        if sys.platform == 'win32':
+            while not stdin_queue.empty():
+                line = stdin_queue.get_nowait()
+                if line is None: raise EOFError
                 repl.push(line)
                 broadcast_state()
 

@@ -11,9 +11,15 @@
 #include <pybind11/stl.h>
 #include <string>
 #include <vector>
+#ifdef _WIN32
+#define NOMINMAX
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#endif
 #include <cstring>
 #include <thread>
 #include <array>
@@ -74,13 +80,22 @@ void pa_check_error(PaError err, const std::string &message) {
   }
 }
 
-void initialize() {
+void oscar_initialize() {
+#ifdef _WIN32
+  WSADATA wsaData;
+  if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+      throw std::runtime_error("WSAStartup failed");
+  }
+#endif
   pa_check_error(Pa_Initialize(), "Failed to initialize PortAudio");
   py::print("PortAudio initialized.");
 }
 
-void terminate() {
+void oscar_terminate() {
   Pa_Terminate();
+#ifdef _WIN32
+  WSACleanup();
+#endif
   py::print("PortAudio terminated.");
 }
 
@@ -330,8 +345,13 @@ private:
   }
 
   void telemetryLoop() {
+#ifdef _WIN32
+      SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+      if (sock == INVALID_SOCKET) return;
+#else
       int sock = socket(AF_INET, SOCK_DGRAM, 0);
       if (sock < 0) return;
+#endif
       
       struct sockaddr_in dest_addr;
       memset(&dest_addr, 0, sizeof(dest_addr));
@@ -343,14 +363,22 @@ private:
       while (telemetry_running_.load()) {
           bool sent_any = false;
           while (telemetry_queue_.pop(packet)) {
+#ifdef _WIN32
+              sendto(sock, (const char*)&packet, sizeof(packet), 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
+#else
               sendto(sock, &packet, sizeof(packet), 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr));
+#endif
               sent_any = true;
           }
           if (!sent_any) {
               std::this_thread::sleep_for(std::chrono::milliseconds(2));
           }
       }
+#ifdef _WIN32
+      closesocket(sock);
+#else
       close(sock);
+#endif
   }
 
 public:
@@ -487,9 +515,9 @@ public:
 PYBIND11_MODULE(oscar_server, m) {
   m.doc() = "A live-coding audio engine with named synths and patches";
 
-  m.def("initialize", &initialize,
+  m.def("initialize", &oscar_initialize,
         "Initializes the PortAudio library. Must be called first.");
-  m.def("terminate", &terminate,
+  m.def("terminate", &oscar_terminate,
         "Terminates the PortAudio library. Must be called last.");
   m.def("get_device_details", &getDeviceDetails,
         "Gets a list of all available audio devices.");

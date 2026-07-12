@@ -12,6 +12,7 @@ OSCAR is a live coding environment for creating visuals using sound waves, which
 *   Python 3.7+
 *   [PortAudio](http://www.portaudio.com/): A cross-platform audio I/O library. You can install it on macOS with `brew install portaudio` or on Debian-based Linux with `sudo apt-get install libportaudio-dev`.
 *   The [OSCAR Renderer](https://github.com/adamz/oscar-render) must be running to visualize the output.
+*   **Windows Audio Setup**: You must install [VB-Audio Virtual Cable](https://vb-audio.com/Cable/) and configure it for 8 channels. To do this, open the Windows Sound Control Panel (`mmsys.cpl`). Under Playback, configure "CABLE Input" to **7.1 Surround**. Under Recording, set the "CABLE Output" Advanced Default Format to **8 channel, 24 bit, 48000 Hz**.
 
 ### Installation
 
